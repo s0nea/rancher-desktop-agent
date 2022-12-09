@@ -43,7 +43,7 @@ const (
 )
 
 // WatchServcies watches Kubernetes for NodePort and LoadBalancer services
-// and create listeners on 127.0.0.1 matching them.
+// and create listeners on 0.0.0.0 matching them.
 // Any connection errors are ignored and retried.
 func WatchForServices(ctx context.Context, tracker *tcplistener.ListenerTracker, configPath string) error {
 	// These variables are shared across the different states
@@ -57,7 +57,7 @@ func WatchForServices(ctx context.Context, tracker *tcplistener.ListenerTracker,
 	)
 
 	watchContext, watchCancel := context.WithCancel(ctx)
-	localhost := net.IPv4(127, 0, 0, 1) //nolint:gomnd
+	localhost := net.IPv4zero
 
 	// Always cancel if we failed; however, we may clobber watchCancel, so we
 	// need a wrapper function to capture the variable reference.
