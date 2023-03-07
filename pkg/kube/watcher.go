@@ -46,8 +46,8 @@ const (
 // WatchServcies watches Kubernetes for NodePort and LoadBalancer services
 // and create listeners on 0.0.0.0 matching them.
 // Any connection errors are ignored and retried.
-func WatchForServices(ctx context.Context, tracker *tcplistener.ListenerTracker, configPath string,
-	portTracker *tracker.PortTracker, k8sServiceListenerIP net.IP,
+func WatchForServices(ctx context.Context, configPath string, tracker *tcplistener.ListenerTracker,
+	portTracker *tracker.PortTracker, k8sServiceListenerIP net.IP, enablePrivilegedService *bool,
 ) error {
 	// These variables are shared across the different states
 	var (
@@ -102,7 +102,7 @@ func WatchForServices(ctx context.Context, tracker *tcplistener.ListenerTracker,
 				return fmt.Errorf("failed to create Kubernetes client: %w", err)
 			}
 
-			eventCh, errorCh, err = watchServices(watchContext, clientset, portTracker, k8sServiceListenerIP)
+			eventCh, errorCh, err = watchServices(watchContext, clientset)
 			if err != nil {
 				if isTimeout(err) {
 					// If it's a time out, the server may not be running yet
@@ -132,9 +132,18 @@ func WatchForServices(ctx context.Context, tracker *tcplistener.ListenerTracker,
 				continue
 			case event := <-eventCh:
 				if event.deleted {
-					if err := tracker.Remove(ctx, k8sServiceListenerIP, int(event.port)); err != nil {
+					var errRemove error
+
+					if *enablePrivilegedService {
+						// Requires container ID?
+						errRemove = portTracker.Remove()
+					} else {
+						errRemove = tracker.Remove(ctx, k8sServiceListenerIP, int(event.port))
+					}
+
+					if errRemove != nil {
 						log.Errorw("failed to close listener", log.Fields{
-							"error":     err,
+							"error":     errRemove,
 							"port":      event.port,
 							"namespace": event.namespace,
 							"name":      event.name,
@@ -146,9 +155,18 @@ func WatchForServices(ctx context.Context, tracker *tcplistener.ListenerTracker,
 					log.Debugf("kuberentes service: deleted listener %s/%s:%d",
 						event.namespace, event.name, event.port)
 				} else {
-					if err := tracker.Add(ctx, k8sServiceListenerIP, int(event.port)); err != nil {
+					var errAdd error
+
+					if *enablePrivilegedService {
+						// Requires container ID?
+						errAdd = portTracker.Add()
+					} else {
+						errAdd = tracker.Add(ctx, k8sServiceListenerIP, int(event.port))
+					}
+
+					if errAdd != nil {
 						log.Errorw("failed to create listener", log.Fields{
-							"error":     err,
+							"error":     errAdd,
 							"port":      event.port,
 							"namespace": event.namespace,
 							"name":      event.name,

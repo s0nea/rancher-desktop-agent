@@ -21,6 +21,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/rancher-sandbox/rancher-desktop-agent/pkg/kube"
 	"net"
 	"os"
 	"os/signal"
@@ -32,7 +33,6 @@ import (
 	"github.com/rancher-sandbox/rancher-desktop-agent/pkg/docker"
 	"github.com/rancher-sandbox/rancher-desktop-agent/pkg/forwarder"
 	"github.com/rancher-sandbox/rancher-desktop-agent/pkg/iptables"
-	"github.com/rancher-sandbox/rancher-desktop-agent/pkg/kube"
 	"github.com/rancher-sandbox/rancher-desktop-agent/pkg/tcplistener"
 	"github.com/rancher-sandbox/rancher-desktop-agent/pkg/tracker"
 	"github.com/rancher-sandbox/rancher-desktop-agent/pkg/types"
@@ -96,7 +96,18 @@ func main() {
 		cancel()
 	}()
 
+	wslAddr, err := getWSLAddr(wslInfName)
+	if err != nil {
+		log.Fatalf("failure getting WSL IP addresses: %v", err)
+	}
+
+	if *vtunnelAddr == "" {
+		log.Fatal("-vtunnelAddr must be provided.")
+	}
+
+	vTunnelForwarder := forwarder.NewVtunnelForwarder(*vtunnelAddr)
 	tcpTracker := tcplistener.NewListenerTracker()
+	portTracker := tracker.NewPortTracker(vTunnelForwarder, wslAddr)
 
 	if *enablePrivilegedService {
 		if !*enableContainerd && !*enableDocker {
@@ -106,18 +117,6 @@ func main() {
 		if *enableContainerd && *enableDocker {
 			log.Fatal("-privilegedService mode requires either -docker or -containerd, not both.")
 		}
-
-		if *vtunnelAddr == "" {
-			log.Fatal("-vtunnelAddr must be provided when docker is enabled.")
-		}
-
-		wslAddr, err := getWSLAddr(wslInfName)
-		if err != nil {
-			log.Fatalf("failure getting WSL IP addresses: %v", err)
-		}
-
-		forwarder := forwarder.NewVtunnelForwarder(*vtunnelAddr)
-		portTracker := tracker.NewPortTracker(forwarder, wslAddr)
 
 		if *enableContainerd {
 			group.Go(func() error {
@@ -149,26 +148,27 @@ func main() {
 				return nil
 			})
 		}
+	}
 
-		if *enableKubernetes {
-			group.Go(func() error {
-				k8sServiceListenerIP := net.ParseIP(*k8sServiceListenerAddr)
+	if *enableKubernetes {
+		group.Go(func() error {
+			k8sServiceListenerIP := net.ParseIP(*k8sServiceListenerAddr)
 
-				if k8sServiceListenerIP == nil || !(k8sServiceListenerIP.Equal(net.IPv4zero) ||
-					k8sServiceListenerIP.Equal(net.IPv4(127, 0, 0, 1))) { //nolint:gomnd // IPv4 addr localhost
-					log.Fatalf("empty or none valid input for Kubernetes service listener IP address %s. "+
-						"Valid options are 0.0.0.0 and 127.0.0.1.", *k8sServiceListenerAddr)
-				}
+			if k8sServiceListenerIP == nil || !(k8sServiceListenerIP.Equal(net.IPv4zero) ||
+				k8sServiceListenerIP.Equal(net.IPv4(127, 0, 0, 1))) { //nolint:gomnd // IPv4 addr localhost
+				log.Fatalf("empty or none valid input for Kubernetes service listener IP address %s. "+
+					"Valid options are 0.0.0.0 and 127.0.0.1.", *k8sServiceListenerAddr)
+			}
 
-				// Watch for kube
-				err := kube.WatchForServices(ctx, tcpTracker, *configPath, portTracker, k8sServiceListenerIP)
-				if err != nil {
-					return fmt.Errorf("error watching services: %w", err)
-				}
+			// Watch for kube
+			err := kube.WatchForServices(ctx, *configPath, tcpTracker, portTracker, k8sServiceListenerIP,
+				enablePrivilegedService)
+			if err != nil {
+				return fmt.Errorf("error watching services: %w", err)
+			}
 
-				return nil
-			})
-		}
+			return nil
+		})
 	}
 
 	if *enableIptables {
